@@ -7090,7 +7090,7 @@ class Mmu:
         if self.check_if_not_calibrated(self.CALIBRATED_ESSENTIAL, check_gates=[gate]): return
         self._fix_started_state()
 
-        can_crossload = (self.mmu_machine.can_crossload or self.mmu_machine.multigear) and self.sensor_manager.has_gate_sensor(self.SENSOR_GEAR_PREFIX, gate)
+        can_crossload = (self.mmu_machine.can_crossload or self.mmu_machine.multigear) and (self.mmu_machine.multigear or self.sensor_manager.has_gate_sensor(self.SENSOR_GEAR_PREFIX, gate))  # Type-B (independent gear motors) doesn't need a gate sensor for crossload
         if not can_crossload and gate != self.gate_selected:
             if self.check_if_loaded(): return
 
@@ -7120,7 +7120,14 @@ class Mmu:
                         self.select_gate(gate)
 
                     try:
-                        self._mmu_unload_eject(gcmd)
+                        # Only do the full unload through the extruder (heat/home/from-nozzle)
+                        # if the ejected gate is the one actually loaded in the toolhead.
+                        # For a different gate (type-B, filament only in the pre-gate) skip the
+                        # extruder - _eject_from_gate() below moves just that slot's gear motor.
+                        # Otherwise ejecting an idle gate dragged the filament loaded in the toolhead.
+                        gate_in_toolhead = (gate == current_gate and self.filament_pos != self.FILAMENT_POS_UNLOADED)
+                        if gate_in_toolhead:
+                            self._mmu_unload_eject(gcmd)
                         if can_eject_from_gate:
                             self.log_always("Ejecting filament out of %s" % ("current gate" if gate == current_gate else "gate %d" % gate))
                             self._eject_from_gate()
@@ -8481,7 +8488,11 @@ class Mmu:
                     self._set_gate_status(gate, self.GATE_UNKNOWN)
                     self._check_pending_spool_id(gate) # Have spool_id ready?
                     if not self.is_printing() and self.gate_autoload:
-                        self.gcode.run_script_from_command("MMU_PRELOAD GATE=%d" % gate)
+                        if self.filament_pos != self.FILAMENT_POS_UNLOADED:
+                            # Toolhead is loaded: don't autoload another gate, just report it
+                            self.log_error("Operation not possible. Filament is loaded")
+                        else:
+                            self.gcode.run_script_from_command("MMU_PRELOAD GATE=%d" % gate)
 
                 elif sensor == self.SENSOR_EXTRUDER_ENTRY:
                     if self.gate_selected != self.TOOL_GATE_BYPASS:
@@ -9139,7 +9150,7 @@ class Mmu:
 
         can_crossload = (
             (self.mmu_machine.can_crossload or self.mmu_machine.multigear)
-            and self.sensor_manager.has_gate_sensor(self.SENSOR_GEAR_PREFIX, gate)
+            and (self.mmu_machine.multigear or self.sensor_manager.has_gate_sensor(self.SENSOR_GEAR_PREFIX, gate))  # Type-B (independent gear motors) doesn't need a gate sensor for crossload
         )
         if not can_crossload:
             if self.check_if_bypass(): return
